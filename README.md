@@ -15,6 +15,16 @@
 - поиск по всему канону и подсказки к терминам правил;
 - журнал всех действий с отменой.
 
+## Скриншоты
+
+Сцена боя: инициатива, урон и лечение, спасброски, состояния; справа — трекер ходов.
+
+![Сцена боя](docs/screenshots/scene.png)
+
+Отчёт сборщика: что разобрано из канона и что не показывает ни одна карточка.
+
+![Отчёт сборщика](docs/screenshots/build-report.png)
+
 ## Устройство
 
 ```text
@@ -66,6 +76,16 @@ The adventure is written as markdown documents (the canon). The site reads them 
 - player character import from Pathbuilder 2e (JSON);
 - search across the whole canon and rule term tooltips;
 - a journal of every action, with undo.
+
+## Screenshots
+
+Combat scene: initiative, damage and healing, saves, conditions; the turn tracker on the right.
+
+![Combat scene](docs/screenshots/scene.png)
+
+Builder report: what was parsed from the canon and what no card shows.
+
+![Builder report](docs/screenshots/build-report.png)
 
 ## Design
 

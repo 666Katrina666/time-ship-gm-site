@@ -1,0 +1,597 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Трассировщик карты</title>
+<style>
+  :root {
+    --bg: #1e1f24;
+    --panel: #2a2c33;
+    --line: #3a3d46;
+    --text: #e8e8ea;
+    --muted: #9a9ca5;
+    --accent: #6aa9ff;
+    --warn: #ffb347;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 13px/1.45 system-ui, "Segoe UI", sans-serif; overflow: hidden; }
+  #app { display: flex; height: 100%; }
+  #side { width: 310px; flex: none; background: var(--panel); padding: 12px 14px;
+    overflow-y: auto; border-right: 1px solid var(--line); }
+  #wrap { flex: 1; position: relative; }
+  canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
+  h1 { font-size: 15px; margin: 0 0 10px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+    margin: 16px 0 6px; }
+  button, label.btn { background: #3a3d46; color: var(--text); border: 1px solid #4a4e59;
+    border-radius: 5px; padding: 5px 9px; font: inherit; cursor: pointer; display: inline-block; margin: 0 4px 4px 0; }
+  button:hover, label.btn:hover { background: #454955; }
+  input[type=file] { display: none; }
+  .types div { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 5px; cursor: pointer; }
+  .types div.on { background: #3a3d46; outline: 1px solid var(--accent); }
+  .swatch { width: 26px; height: 0; border-top: 3px solid; flex: none; }
+  .k { color: var(--muted); font-family: ui-monospace, monospace; width: 14px; }
+  #info, #stats { background: #23252b; border-radius: 5px; padding: 8px; white-space: pre-wrap; }
+  .warn { color: var(--warn); }
+  .help p { margin: 3px 0; color: var(--muted); }
+  .help b { color: var(--text); font-weight: 600; }
+  #empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: var(--muted); font-size: 15px; pointer-events: none; }
+  input[type=range] { width: 100%; }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="side">
+    <h1>Трассировщик карты</h1>
+
+    <label class="btn">Открыть фото<input type="file" id="imgFile" accept="image/*"></label>
+    <button id="rotL" title="Повернуть против часовой">&#8634; 90°</button>
+    <button id="rotR" title="Повернуть по часовой">&#8635; 90°</button>
+    <button id="fit">Вписать (F)</button>
+
+    <h2>Прозрачность фото</h2>
+    <input type="range" id="opacity" min="0" max="100" value="85">
+
+    <h2>Тип перехода</h2>
+    <div class="types" id="types"></div>
+
+    <h2>Выделено</h2>
+    <div id="info">ничего</div>
+
+    <h2>Проверка</h2>
+    <div id="stats"></div>
+
+    <h2>Файл графа</h2>
+    <button id="export">Экспорт JSON</button>
+    <label class="btn">Импорт JSON<input type="file" id="jsonFile" accept=".json,application/json"></label>
+    <button id="clear">Очистить граф</button>
+
+    <h2>Управление</h2>
+    <div class="help">
+      <p>Ставь точки только там, где можно <b>стоять</b>: по осевой линии коридоров и в центрах комнат. Стены не рисуются.</p>
+      <p><b>Клик по пустому месту</b> — новая точка; если была выделена точка, они соединяются текущим типом. Так коридор ведётся ломаной.</p>
+      <p><b>Клик по точке</b> — соединить с выделенной (или выделить).</p>
+      <p><b>Клик по линии</b> при выделенной точке — развилка: линия делится, новая точка соединяется с выделенной. <b>Shift+клик</b> по линии — просто разделить.</p>
+      <p><b>Esc</b> — закончить ломаную (снять выделение).</p>
+      <p><b>R</b> или <b>двойной клик</b> по точке — номер комнаты (1–41 или слово: «колодец», «лифт»).</p>
+      <p><b>N</b> — заметка к точке или линии.</p>
+      <p><b>1–6</b> — тип перехода; при выделенной линии меняет её тип.</p>
+      <p><b>Delete</b> — удалить выделенное. <b>Ctrl+Z</b> — отменить.</p>
+      <p><b>Перетаскивание точки</b> — сдвинуть. <b>Колесо</b> — масштаб. <b>Правая или средняя кнопка</b> — двигать карту.</p>
+      <p>Тупик отмечать не нужно: точка с одной линией подсвечивается сама.</p>
+      <p>Всё сохраняется в браузере автоматически. В конце — «Экспорт JSON».</p>
+    </div>
+  </aside>
+  <div id="wrap">
+    <canvas id="cv"></canvas>
+    <div id="empty">Открой фото карты</div>
+  </div>
+</div>
+
+<script>
+const TYPES = [
+  { key: 'corridor', label: 'Коридор / открытый проход', color: '#4da3ff', dash: [] },
+  { key: 'door',     label: 'Дверь',                     color: '#3ecf6e', dash: [] },
+  { key: 'locked',   label: 'Заперто',                   color: '#ff9d2e', dash: [] },
+  { key: 'flicker',  label: 'Мерцающая стена',           color: '#ff3b6b', dash: [7, 4] },
+  { key: 'secret',   label: 'Потайная дверь',            color: '#c38bff', dash: [2, 4] },
+  { key: 'special',  label: 'Особый (лифт, портал, часы, канал, спуск)', color: '#2ee6d6', dash: [10, 4, 2, 4] },
+];
+const TYPE_BY_KEY = Object.fromEntries(TYPES.map(t => [t.key, t]));
+const LS_GRAPH = 'karta_trace_graph_v1';
+const LS_IMAGE = 'karta_trace_image_v1';
+const KNOWN_ROOMS = 41;
+
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const $ = id => document.getElementById(id);
+
+let graph = { nodes: [], edges: [], nextId: 1 };
+let image = { el: null, url: null, name: '', rotation: 0 };
+let view = { s: 1, x: 0, y: 0 };
+let sel = null;          // { kind: 'node' | 'edge', id }
+let curType = 'corridor';
+let undoStack = [];
+let mouse = { x: 0, y: 0, inside: false };
+let press = null;        // active mouse gesture
+let opacity = 0.85;
+let pendingFit = false;
+
+// ---------- persistence ----------
+
+function save() {
+  try {
+    localStorage.setItem(LS_GRAPH, JSON.stringify({ graph, imageName: image.name, rotation: image.rotation }));
+  } catch (e) { /* storage unavailable: work continues in memory */ }
+}
+
+function saveImage() {
+  try { if (image.url) localStorage.setItem(LS_IMAGE, image.url); } catch (e) { /* too large or blocked */ }
+}
+
+function load() {
+  try {
+    const raw = localStorage.getItem(LS_GRAPH);
+    if (raw) {
+      const d = JSON.parse(raw);
+      graph = d.graph;
+      image.name = d.imageName || '';
+      image.rotation = d.rotation || 0;
+    }
+    const url = localStorage.getItem(LS_IMAGE);
+    if (url) setImage(url, image.name, false);
+  } catch (e) { /* start clean */ }
+}
+
+function pushUndo() {
+  undoStack.push(JSON.stringify(graph));
+  if (undoStack.length > 200) undoStack.shift();
+}
+
+function undo() {
+  if (!undoStack.length) return;
+  graph = JSON.parse(undoStack.pop());
+  sel = null;
+  changed();
+}
+
+function changed() { save(); updatePanel(); draw(); }
+
+// ---------- graph ops ----------
+
+const nodeById = id => graph.nodes.find(n => n.id === id);
+const edgeById = id => graph.edges.find(e => e.id === id);
+const degree = id => graph.edges.filter(e => e.a === id || e.b === id).length;
+
+function addNode(x, y) {
+  const n = { id: graph.nextId++, x: Math.round(x), y: Math.round(y) };
+  graph.nodes.push(n);
+  return n;
+}
+
+function addEdge(a, b, type) {
+  if (a === b) return null;
+  const dup = graph.edges.find(e => (e.a === a && e.b === b) || (e.a === b && e.b === a));
+  if (dup) return dup;
+  const e = { id: graph.nextId++, a, b, type };
+  graph.edges.push(e);
+  return e;
+}
+
+function removeNode(id) {
+  graph.edges = graph.edges.filter(e => e.a !== id && e.b !== id);
+  graph.nodes = graph.nodes.filter(n => n.id !== id);
+}
+
+function splitEdge(edge, p) {
+  const n = addNode(p.x, p.y);
+  graph.edges = graph.edges.filter(e => e.id !== edge.id);
+  const e1 = addEdge(edge.a, n.id, edge.type);
+  const e2 = addEdge(n.id, edge.b, edge.type);
+  if (edge.note) { e1.note = edge.note; e2.note = edge.note; }
+  return n;
+}
+
+// ---------- geometry ----------
+
+const toImg = (sx, sy) => ({ x: (sx - view.x) / view.s, y: (sy - view.y) / view.s });
+
+function projectOnSegment(p, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy || 1;
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2));
+  return { x: a.x + t * dx, y: a.y + t * dy, t };
+}
+
+function hitNode(p) {
+  let best = null, bestD = Infinity;
+  for (const n of graph.nodes) {
+    const r = (n.room ? 13 : 8) / view.s;
+    const d = Math.hypot(n.x - p.x, n.y - p.y);
+    if (d < r && d < bestD) { best = n; bestD = d; }
+  }
+  return best;
+}
+
+function hitEdge(p) {
+  let best = null, bestD = 6 / view.s;
+  for (const e of graph.edges) {
+    const a = nodeById(e.a), b = nodeById(e.b);
+    const q = projectOnSegment(p, a, b);
+    const d = Math.hypot(q.x - p.x, q.y - p.y);
+    if (d < bestD) { best = e; bestD = d; }
+  }
+  return best;
+}
+
+// ---------- image ----------
+
+function setImage(url, name, resetView = true) {
+  const el = new Image();
+  el.onload = () => {
+    image.el = el; image.url = url; image.name = name;
+    $('empty').style.display = 'none';
+    if (resetView) fit();
+    save(); saveImage(); draw(); updatePanel();
+  };
+  el.src = url;
+}
+
+function rotate(cw) {
+  if (!image.el) return;
+  const w = image.el.width, h = image.el.height;
+  const c = document.createElement('canvas');
+  c.width = h; c.height = w;
+  const g = c.getContext('2d');
+  g.translate(h / 2, w / 2);
+  g.rotate(cw ? Math.PI / 2 : -Math.PI / 2);
+  g.drawImage(image.el, -w / 2, -h / 2);
+  pushUndo();
+  for (const n of graph.nodes) {
+    const { x, y } = n;
+    if (cw) { n.x = h - y; n.y = x; } else { n.x = y; n.y = w - x; }
+  }
+  image.rotation = ((image.rotation + (cw ? 90 : -90)) % 360 + 360) % 360;
+  setImage(c.toDataURL('image/jpeg', 0.92), image.name);
+}
+
+function fit() {
+  if (!image.el) return;
+  const W = cv.clientWidth, H = cv.clientHeight;
+  if (!W || !H) { pendingFit = true; return; }
+  pendingFit = false;
+  view.s = Math.min(W / image.el.width, H / image.el.height) * 0.96;
+  view.x = (W - image.el.width * view.s) / 2;
+  view.y = (H - image.el.height * view.s) / 2;
+  draw();
+}
+
+// ---------- drawing ----------
+
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = cv.clientWidth * dpr;
+  cv.height = cv.clientHeight * dpr;
+  if (image.el && pendingFit) fit();
+  draw();
+}
+
+function draw() {
+  const dpr = window.devicePixelRatio || 1;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  ctx.setTransform(dpr * view.s, 0, 0, dpr * view.s, dpr * view.x, dpr * view.y);
+  const px = 1 / view.s;
+
+  if (image.el) {
+    ctx.globalAlpha = opacity;
+    ctx.drawImage(image.el, 0, 0);
+    ctx.globalAlpha = 1;
+  }
+
+  for (const e of graph.edges) {
+    const a = nodeById(e.a), b = nodeById(e.b), t = TYPE_BY_KEY[e.type];
+    if (sel && sel.kind === 'edge' && sel.id === e.id) {
+      ctx.setLineDash([]);
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 8 * px;
+      line(a, b);
+    }
+    ctx.strokeStyle = '#000'; ctx.lineWidth = 5 * px; ctx.setLineDash([]);
+    line(a, b);
+    ctx.strokeStyle = t.color; ctx.lineWidth = 3 * px;
+    ctx.setLineDash(t.dash.map(v => v * px));
+    line(a, b);
+  }
+  ctx.setLineDash([]);
+
+  const s = selNode();
+  if (s && mouse.inside && !press) {
+    const m = toImg(mouse.x, mouse.y);
+    ctx.globalAlpha = 0.6;
+    ctx.strokeStyle = TYPE_BY_KEY[curType].color; ctx.lineWidth = 2 * px;
+    ctx.setLineDash([4 * px, 4 * px]);
+    line(s, m);
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+  }
+
+  for (const n of graph.nodes) {
+    const deg = degree(n.id);
+    const isSel = s && s.id === n.id;
+    if (n.room) {
+      const r = 11 * px;
+      ctx.fillStyle = '#ffd24d'; ctx.strokeStyle = '#000'; ctx.lineWidth = 2 * px;
+      circle(n, r); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#000';
+      ctx.font = `bold ${11 * px}px system-ui, sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      const label = String(n.room);
+      ctx.fillText(label.length > 3 ? label.slice(0, 3) : label, n.x, n.y + 0.5 * px);
+      if (deg === 0) ring(n, 15 * px, '#ff3b3b');
+    } else {
+      ctx.fillStyle = '#fff'; ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5 * px;
+      circle(n, 4 * px); ctx.fill(); ctx.stroke();
+      if (deg === 1) ring(n, 8 * px, '#ffb347');
+      if (deg === 0) ring(n, 8 * px, '#ff3b3b');
+    }
+    if (n.note) ring(n, (n.room ? 17 : 11) * px, '#c38bff', [2 * px, 2 * px]);
+    if (isSel) ring(n, (n.room ? 16 : 10) * px, '#6aa9ff');
+  }
+}
+
+function line(a, b) { ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); }
+function circle(n, r) { ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, Math.PI * 2); }
+function ring(n, r, color, dash = []) {
+  ctx.strokeStyle = color; ctx.lineWidth = 2 / view.s; ctx.setLineDash(dash);
+  circle(n, r); ctx.stroke(); ctx.setLineDash([]);
+}
+
+const selNode = () => (sel && sel.kind === 'node') ? nodeById(sel.id) : null;
+const selEdge = () => (sel && sel.kind === 'edge') ? edgeById(sel.id) : null;
+
+// ---------- panel ----------
+
+function buildTypes() {
+  const box = $('types');
+  box.innerHTML = '';
+  TYPES.forEach((t, i) => {
+    const d = document.createElement('div');
+    d.className = t.key === curType ? 'on' : '';
+    d.innerHTML = `<span class="k">${i + 1}</span><span class="swatch" style="border-top:3px ${t.dash.length ? 'dashed' : 'solid'} ${t.color}"></span><span>${t.label}</span>`;
+    d.onclick = () => setType(t.key);
+    box.appendChild(d);
+  });
+}
+
+function setType(key) {
+  curType = key;
+  const e = selEdge();
+  if (e && e.type !== key) { pushUndo(); e.type = key; changed(); }
+  buildTypes(); draw();
+}
+
+function updatePanel() {
+  const n = selNode(), e = selEdge();
+  if (n) {
+    $('info').textContent = (n.room ? `Комната: ${n.room}` : 'Узел коридора') +
+      `\nСвязей: ${degree(n.id)}` + (n.note ? `\nЗаметка: ${n.note}` : '');
+  } else if (e) {
+    const a = nodeById(e.a), b = nodeById(e.b);
+    const name = x => x.room ? `комната ${x.room}` : `узел ${x.id}`;
+    $('info').textContent = `${TYPE_BY_KEY[e.type].label}\n${name(a)} — ${name(b)}` + (e.note ? `\nЗаметка: ${e.note}` : '');
+  } else {
+    $('info').textContent = 'ничего';
+  }
+
+  const rooms = graph.nodes.filter(x => x.room);
+  const placed = new Set(rooms.map(x => String(x.room)));
+  const missing = [];
+  for (let i = 1; i <= KNOWN_ROOMS; i++) if (!placed.has(String(i))) missing.push(i);
+  const counts = {};
+  for (const x of graph.edges) counts[x.type] = (counts[x.type] || 0) + 1;
+  const dead = graph.nodes.filter(x => !x.room && degree(x.id) === 1).length;
+  const lonely = graph.nodes.filter(x => degree(x.id) === 0);
+  const seen = {};
+  const dupRooms = [];
+  for (const r of rooms) { const k = String(r.room); if (seen[k]) dupRooms.push(k); seen[k] = true; }
+
+  let html = `Точек: ${graph.nodes.length}, линий: ${graph.edges.length}\n`;
+  html += TYPES.filter(t => counts[t.key]).map(t => `  ${t.label}: ${counts[t.key]}`).join('\n');
+  html += `\nКомнат расставлено: ${placed.size}\nТупиков: ${dead}\n`;
+  if (missing.length) html += `Нет комнат: ${missing.join(', ')}\n`;
+  if (lonely.length) html += `<span class="warn">Точек без связей: ${lonely.length}</span>\n`;
+  if (dupRooms.length) html += `<span class="warn">Номер повторяется: ${[...new Set(dupRooms)].join(', ')}</span>\n`;
+  $('stats').innerHTML = html;
+}
+
+// ---------- input ----------
+
+cv.addEventListener('contextmenu', e => e.preventDefault());
+
+cv.addEventListener('mousedown', ev => {
+  const sx = ev.offsetX, sy = ev.offsetY;
+  if (ev.button === 1 || ev.button === 2) {
+    press = { kind: 'pan', sx, sy, vx: view.x, vy: view.y };
+    return;
+  }
+  if (ev.button !== 0 || !image.el) return;
+  const p = toImg(sx, sy);
+  const node = hitNode(p);
+  press = { kind: 'click', sx, sy, p, node, moved: false, shift: ev.shiftKey };
+});
+
+window.addEventListener('mousemove', ev => {
+  const r = cv.getBoundingClientRect();
+  mouse.x = ev.clientX - r.left; mouse.y = ev.clientY - r.top;
+  mouse.inside = mouse.x >= 0 && mouse.y >= 0 && mouse.x <= r.width && mouse.y <= r.height;
+  if (press && press.kind === 'pan') {
+    view.x = press.vx + (mouse.x - press.sx);
+    view.y = press.vy + (mouse.y - press.sy);
+  } else if (press && press.kind === 'click' && press.node) {
+    if (!press.moved && Math.hypot(mouse.x - press.sx, mouse.y - press.sy) > 4) {
+      press.moved = true;
+      pushUndo();
+    }
+    if (press.moved) {
+      const p = toImg(mouse.x, mouse.y);
+      press.node.x = Math.round(p.x); press.node.y = Math.round(p.y);
+    }
+  }
+  draw();
+});
+
+window.addEventListener('mouseup', ev => {
+  if (!press) return;
+  const g = press;
+  press = null;
+  if (g.kind === 'pan') return;
+  if (g.moved) { changed(); return; }
+
+  const cur = selNode();
+  if (g.node) {
+    if (cur && cur.id !== g.node.id) { pushUndo(); addEdge(cur.id, g.node.id, curType); }
+    sel = { kind: 'node', id: g.node.id };
+    changed();
+    return;
+  }
+
+  const edge = hitEdge(g.p);
+  if (edge && (cur || g.shift)) {
+    pushUndo();
+    const a = nodeById(edge.a), b = nodeById(edge.b);
+    const q = projectOnSegment(g.p, a, b);
+    const n = splitEdge(edge, q);
+    if (cur && !g.shift) addEdge(cur.id, n.id, curType);
+    sel = { kind: 'node', id: n.id };
+    changed();
+    return;
+  }
+  if (edge) { sel = { kind: 'edge', id: edge.id }; changed(); return; }
+
+  pushUndo();
+  const n = addNode(g.p.x, g.p.y);
+  if (cur) addEdge(cur.id, n.id, curType);
+  sel = { kind: 'node', id: n.id };
+  changed();
+});
+
+cv.addEventListener('dblclick', ev => {
+  const n = hitNode(toImg(ev.offsetX, ev.offsetY));
+  if (n) { sel = { kind: 'node', id: n.id }; askRoom(n); }
+});
+
+cv.addEventListener('wheel', ev => {
+  ev.preventDefault();
+  const k = Math.exp(-ev.deltaY * 0.0015);
+  const s = Math.max(0.05, Math.min(20, view.s * k));
+  const p = toImg(ev.offsetX, ev.offsetY);
+  view.s = s;
+  view.x = ev.offsetX - p.x * s;
+  view.y = ev.offsetY - p.y * s;
+  draw();
+}, { passive: false });
+
+function askRoom(n) {
+  const v = prompt('Номер комнаты (1–41) или название. Пусто — обычный узел.', n.room || '');
+  if (v === null) return;
+  pushUndo();
+  const t = v.trim();
+  if (t) n.room = /^\d+$/.test(t) ? Number(t) : t; else delete n.room;
+  changed();
+}
+
+function askNote(item) {
+  const v = prompt('Заметка (пусто — удалить):', item.note || '');
+  if (v === null) return;
+  pushUndo();
+  const t = v.trim();
+  if (t) item.note = t; else delete item.note;
+  changed();
+}
+
+window.addEventListener('keydown', ev => {
+  if (ev.target.tagName === 'INPUT') return;
+  const key = ev.key.toLowerCase();
+  if ((ev.ctrlKey || ev.metaKey) && (key === 'z' || key === 'я')) { ev.preventDefault(); undo(); return; }
+  if (ev.key === 'Escape') { sel = null; changed(); return; }
+  if (/^[1-6]$/.test(ev.key)) { setType(TYPES[Number(ev.key) - 1].key); return; }
+  if (key === 'f' || key === 'а') { fit(); return; }
+  if (ev.key === 'Delete' || ev.key === 'Backspace') {
+    if (!sel) return;
+    pushUndo();
+    if (sel.kind === 'node') removeNode(sel.id);
+    else graph.edges = graph.edges.filter(e => e.id !== sel.id);
+    sel = null; changed();
+    return;
+  }
+  const n = selNode(), e = selEdge();
+  if ((key === 'r' || key === 'к' || ev.key === 'Enter') && n) { askRoom(n); return; }
+  if ((key === 'n' || key === 'т') && (n || e)) { askNote(n || e); return; }
+});
+
+// ---------- files ----------
+
+$('imgFile').addEventListener('change', ev => {
+  const f = ev.target.files[0];
+  if (!f) return;
+  const r = new FileReader();
+  r.onload = () => { image.rotation = 0; setImage(r.result, f.name); };
+  r.readAsDataURL(f);
+  ev.target.value = '';
+});
+
+$('rotL').onclick = () => rotate(false);
+$('rotR').onclick = () => rotate(true);
+$('fit').onclick = fit;
+$('opacity').oninput = ev => { opacity = ev.target.value / 100; draw(); };
+
+$('export').onclick = () => {
+  const data = {
+    format: 'karta-trace/1',
+    image: image.el ? { name: image.name, width: image.el.width, height: image.el.height, rotation: image.rotation } : null,
+    edgeTypes: Object.fromEntries(TYPES.map(t => [t.key, t.label])),
+    nodes: graph.nodes.map(n => ({ id: n.id, x: n.x, y: n.y, ...(n.room !== undefined && { room: n.room }), ...(n.note && { note: n.note }) })),
+    edges: graph.edges.map(e => ({ id: e.id, a: e.a, b: e.b, type: e.type, ...(e.note && { note: e.note }) })),
+  };
+  const blob = new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'karta_graf.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+
+$('jsonFile').addEventListener('change', ev => {
+  const f = ev.target.files[0];
+  if (!f) return;
+  const r = new FileReader();
+  r.onload = () => {
+    try {
+      const d = JSON.parse(r.result);
+      pushUndo();
+      const maxId = Math.max(0, ...d.nodes.map(n => n.id), ...d.edges.map(e => e.id));
+      graph = { nodes: d.nodes, edges: d.edges, nextId: maxId + 1 };
+      sel = null; changed();
+    } catch (e) { alert('Не удалось прочитать JSON: ' + e.message); }
+  };
+  r.readAsText(f);
+  ev.target.value = '';
+});
+
+$('clear').onclick = () => {
+  if (!graph.nodes.length || !confirm('Удалить все точки и линии? Отменить можно через Ctrl+Z.')) return;
+  pushUndo();
+  graph = { nodes: [], edges: [], nextId: graph.nextId };
+  sel = null; changed();
+};
+
+window.addEventListener('resize', resize);
+buildTypes();
+load();
+resize();
+updatePanel();
+</script>
+</body>
+</html>
